@@ -7,166 +7,173 @@ const app = express();
 const port = 8000;
 
 app.use(cors());
-app.use(express.json());
+
+
+function sanitize(input) {
+  if (typeof input !== "string") return input;
+
+  return input
+    .replace(/'/g, "''")   
+    .replace(/--/g, "")    
+    .replace(/;/g, "")     
+    .replace(/\*/g, "")    
+    .trim();
+}
+
 
 const db = new sqlite3.Database('./database.db', (err) => {
-  if (err) {
-    console.error("[DB] Connection error:", err.message);
-  } else {
-    console.log('[DB] Connected to SQLite');
-  }
+  if (err) console.error(err.message);
+  else console.log('Connected to SQLite database.');
 });
 
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    email TEXT NOT NULL,
-    password TEXT NOT NULL,
-    is_admin INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
 
-  db.run(`CREATE TABLE IF NOT EXISTS products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    description TEXT,
-    price REAL NOT NULL,
-    image TEXT,
-    category TEXT,
-    rating_rate REAL,
-    rating_count INTEGER
-  )`);
-});
+db.run(`
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  email TEXT NOT NULL,
+  password TEXT NOT NULL,
+  is_admin INTEGER DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+
+db.run(`
+CREATE TABLE IF NOT EXISTS products (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  description TEXT,
+  price REAL NOT NULL,
+  image TEXT,
+  category TEXT,
+  rating_rate REAL,
+  rating_count INTEGER
+)`);
+
 
 async function insertRandomUsers() {
   try {
-    const requests = Array(5).fill(null).map(() => axios.get('https://randomuser.me/api/'));
-    const results = await Promise.all(requests);
+    const urls = [1, 2, 3, 4, 5].map(() => axios.get('https://randomuser.me/api/'));
+    const results = await Promise.all(urls);
 
     const users = results.map(r => r.data.results[0]);
 
-    return Promise.all(
-      users.map(u =>
-        new Promise((resolve, reject) => {
-          const query = `
-            INSERT INTO users (username, email, password, is_admin)
-            VALUES (?, ?, ?, 0)
-          `;
+    users.forEach(u => {
+      const username = sanitize(u.login.username);
+      const password = sanitize(u.login.password);
+      const email = sanitize(u.email);
 
-          db.run(query, [u.login.username, u.email, u.login.password], (err) => {
-            if (err) {
-              if (err.message.includes("UNIQUE constraint failed")) {
-                console.log("[DB] Duplicate user skipped");
-                return resolve();
-              }
-              return reject(err);
-            }
-            resolve();
-          });
-        })
-      )
-    );
+      const query = `
+        INSERT INTO users (username, email, password, is_admin)
+        VALUES ('${username}', '${email}', '${password}', 0)
+      `;
+
+      db.run(query, (err) => {
+        if (err) console.error("User insert error:", err.message);
+      });
+    });
+
+    console.log("Inserted 5 random users.");
   } catch (err) {
-    console.error("[USERS] Error:", err.message);
-    throw err;
+    console.error("Error inserting users:", err.message);
   }
 }
 
 async function insertProductsFromAPI() {
   try {
-    const { data } = await axios.get('https://fakestoreapi.com/products');
+    const response = await axios.get('https://fakestoreapi.com/products');
+    const products = response.data;
 
-    return Promise.all(
-      data.map(p =>
-        new Promise((resolve, reject) => {
-          const query = `
-            INSERT INTO products (title, description, price, image, category, rating_rate, rating_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `;
+    products.forEach(p => {
+      const title = sanitize(p.title);
+      const description = sanitize(p.description);
+      const category = sanitize(p.category);
+      const image = sanitize(p.image);
 
-          db.run(query, [
-            p.title,
-            p.description,
-            p.price,
-            p.image,
-            p.category,
-            p.rating.rate,
-            p.rating.count
-          ], (err) => {
-            if (err) return reject(err);
-            resolve();
-          });
-        })
-      )
-    );
+      const query = `
+        INSERT INTO products (title, description, price, image, category, rating_rate, rating_count)
+        VALUES ('${title}', '${description}', ${p.price}, '${image}', '${category}', ${p.rating.rate}, ${p.rating.count})
+      `;
+
+      db.run(query, (err) => {
+        if (err) console.error("Product insert error:", err.message);
+      });
+    });
+
+    console.log("Products inserted:", products.length);
   } catch (err) {
-    console.error("[PRODUCTS] Fetch error:", err.message);
-    throw err;
+    console.error("Error fetching products:", err.message);
   }
 }
 
 app.get('/generate-users', async (req, res) => {
-  try {
-    await insertRandomUsers();
-    res.json({ success: true, message: "5 users inserted" });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  await insertRandomUsers();
+  res.json({ success: true, message: "Generated 5 random users" });
 });
 
 app.get('/generate-products', async (req, res) => {
-  try {
-    await insertProductsFromAPI();
-    res.json({ success: true, message: "Products inserted" });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  await insertProductsFromAPI();
+  res.json({ success: true, message: "Products generated" });
 });
 
+
 app.get('/products/search', (req, res) => {
-  const search = `%${(req.query.q || "").trim()}%`;
+  const raw = req.query.q || "";
+  const search = sanitize(raw);
 
   const query = `
     SELECT id, title, description, price, image, category, rating_rate, rating_count
     FROM products
-    WHERE title LIKE ? OR description LIKE ? OR category LIKE ?
+    WHERE title LIKE '%${search}%'
+       OR description LIKE '%${search}%'
+       OR category LIKE '%${search}%'
   `;
 
-  db.all(query, [search, search, search], (err, rows) => {
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error("SQL search error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(rows);
+  });
+});
+
+
+app.get('/products', (req, res) => {
+  db.all(`
+    SELECT id, title, description, price, image, category, rating_rate, rating_count
+    FROM products
+  `, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows);
   });
 });
 
-app.get('/products', (req, res) => {
-  db.all(
-    `SELECT id, title, description, price, image, category, rating_rate, rating_count FROM products`,
-    [],
-    (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
-    }
-  );
-});
 
 app.get('/products/:id', (req, res) => {
-  const id = Number(req.params.id);
-  if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+  let id = sanitize(req.params.id);
 
-  db.get(
-    `SELECT * FROM products WHERE id = ?`,
-    [id],
-    (err, row) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!row) return res.status(404).json({ error: "Product not found" });
-      res.json(row);
-    }
-  );
+  
+  if (isNaN(id)) {
+    return res.status(400).json({ error: "Invalid ID" });
+  }
+
+  const query = `
+    SELECT id, title, description, price, image, category, rating_rate, rating_count
+    FROM products
+    WHERE id = ${id}
+  `;
+
+  db.get(query, [], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(row || {});
+  });
 });
 
-app.get('/', (req, res) => res.send("Hello Ipssi v3 — API Ready!"));
+
+app.get('/', (req, res) => {
+  res.send("Hello Ipssi v2!");
+});
 
 app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+  console.log(`Server running on port ${port}`);
 });
