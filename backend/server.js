@@ -1,20 +1,17 @@
-const express = require('express')
+const express = require('express');
 const cors = require('cors');
-
-const app = express()
 const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
 
-const port = 8000
+const app = express();
+const port = 8000;
 
-
-app.use(cors())
+app.use(cors());
 
 const db = new sqlite3.Database('./database.db', (err) => {
-    if (err) console.error(err.message);
-    else console.log('Connected to SQLite database.');
+  if (err) console.error(err.message);
+  else console.log('Connected to SQLite database.');
 });
-
 
 db.run(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +33,6 @@ db.run(`CREATE TABLE IF NOT EXISTS products (
   rating_count INTEGER
 )`);
 
-
 async function insertRandomUsers() {
   try {
     const urls = [1, 2, 3, 4, 5].map(() => axios.get('https://randomuser.me/api/'));
@@ -49,12 +45,12 @@ async function insertRandomUsers() {
       const email = u.email;
 
       db.run(
-        `INSERT INTO users (username, email, password, is_admin) VALUES ('${username}', '${email}', '${password}', 0)`,
-        (err) => {
-          if (err) console.error(err.message);
-        }
+        `INSERT INTO users (username, email, password, is_admin) VALUES (?, ?, ?, 0)`,
+        [username, email, password],
+        (err) => { if (err) console.error(err.message); }
       );
     });
+
     console.log('Inserted 5 random users into database.');
   } catch (err) {
     console.error('Error inserting users:', err.message);
@@ -70,23 +66,20 @@ async function insertProductsFromAPI() {
       const title = p.title.replace(/'/g, "''");
       const description = p.description.replace(/'/g, "''");
       const category = p.category.replace(/'/g, "''");
-      
+
       db.run(
-        `INSERT INTO products (title, description, price, image, category, rating_rate, rating_count) 
+        `INSERT INTO products (title, description, price, image, category, rating_rate, rating_count)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [title, description, p.price, p.image, category, p.rating.rate, p.rating.count],
-        (err) => {
-          if (err) console.error('Error inserting product:', err.message);
-        }
+        (err) => { if (err) console.error('Error inserting product:', err.message); }
       );
     });
-    
+
     console.log(`Inserted ${products.length} products into database.`);
   } catch (err) {
     console.error('Error fetching products:', err.message);
   }
 }
-
 
 app.get('/generate-users', async (req, res) => {
   await insertRandomUsers();
@@ -94,22 +87,20 @@ app.get('/generate-users', async (req, res) => {
 });
 
 app.get('/generate-products', async (req, res) => {
-    await insertProductsFromAPI()
-    res.send('products generated')
-})
-
+  await insertProductsFromAPI();
+  res.json({ success: true, message: 'Products generated' });
+});
 
 app.get('/products/search', (req, res) => {
   const searchTerm = req.query.q || '';
+  const searchPattern = `%${searchTerm}%`;
 
-  console.log(req.query.q);
-  
-  
-  const query = `SELECT * FROM products WHERE title LIKE '%${searchTerm}%' OR description LIKE '%${searchTerm}%' OR category LIKE '%${searchTerm}%'`;
-  
-  console.log('Search query:', query);
-  
-  db.all(query, [], (err, rows) => {
+  const query = `
+    SELECT id, title, description, price, image, category, rating_rate, rating_count
+    FROM products
+    WHERE title LIKE ? OR description LIKE ? OR category LIKE ?`;
+
+  db.all(query, [searchPattern, searchPattern, searchPattern], (err, rows) => {
     if (err) {
       console.error('SQL Error:', err.message);
       return res.status(500).json({ error: err.message });
@@ -119,31 +110,30 @@ app.get('/products/search', (req, res) => {
 });
 
 app.get('/products', (req, res) => {
-    db.all('SELECT * FROM products', [], (err, rows) => {
-        if (err)
-            return res.status(500).json({error : err.message})
-        res.json(rows)
-    });
+  db.all('SELECT id, title, description, price, image, category, rating_rate, rating_count FROM products', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
 });
 
 app.get('/products/:id', (req, res) => {
-    const productId = req.params.id
+  const productId = req.params.id;
 
-    const query = `SELECT * FROM products WHERE id = ${productId}`;
+  const query = `
+    SELECT id, title, description, price, image, category, rating_rate, rating_count 
+    FROM products 
+    WHERE id = ?`;
 
-    db.get(query, [], (err, rows) => {
-        if (err)
-            return res.status(500).json({error : err.message})
-        res.json(rows || {})
-    });
-})
+  db.get(query, [productId], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(row || {});
+  });
+});
 
 app.get('/', (req, res) => {
-    res.send('Hello Ipssi v2!')
-})
-
-
+  res.send('Hello Ipssi v2!');
+});
 
 app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
-})
+  console.log(`Example app listening on port ${port}`);
+});
