@@ -1,179 +1,164 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const sqlite3 = require('sqlite3').verbose();
+const { Sequelize, DataTypes } = require('sequelize');
 
 const app = express();
+app.use(cors());
 const port = 8000;
 
-app.use(cors());
+
+const sequelize = new Sequelize({
+  dialect: 'sqlite',
+  storage: './database.db',
+  logging: console.log 
+});
 
 
 function sanitize(input) {
   if (typeof input !== "string") return input;
-
   return input
-    .replace(/'/g, "''")   
-    .replace(/--/g, "")    
-    .replace(/;/g, "")     
-    .replace(/\*/g, "")    
+    .replace(/'/g, "''")
+    .replace(/--/g, "")
+    .replace(/;/g, "")
     .trim();
 }
 
 
-const db = new sqlite3.Database('./database.db', (err) => {
-  if (err) console.error(err.message);
-  else console.log('Connected to SQLite database.');
+const User = sequelize.define('User', {
+  username: { type: DataTypes.STRING, unique: true, allowNull: false },
+  email: { type: DataTypes.STRING, allowNull: false },
+  password: { type: DataTypes.STRING, allowNull: false },
+  is_admin: { type: DataTypes.INTEGER, defaultValue: 0 }
+}, {
+  timestamps: false
+});
+
+const Product = sequelize.define('Product', {
+  title: { type: DataTypes.STRING, allowNull: false },
+  description: { type: DataTypes.STRING },
+  price: { type: DataTypes.FLOAT, allowNull: false },
+  image: { type: DataTypes.STRING },
+  category: { type: DataTypes.STRING },
+  rating_rate: { type: DataTypes.FLOAT },
+  rating_count: { type: DataTypes.INTEGER }
+}, {
+  timestamps: false
 });
 
 
-db.run(`
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE NOT NULL,
-  email TEXT NOT NULL,
-  password TEXT NOT NULL,
-  is_admin INTEGER DEFAULT 0,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)`);
-
-db.run(`
-CREATE TABLE IF NOT EXISTS products (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  description TEXT,
-  price REAL NOT NULL,
-  image TEXT,
-  category TEXT,
-  rating_rate REAL,
-  rating_count INTEGER
-)`);
+sequelize.sync().then(() => {
+  console.log("Database synchronized.");
+});
 
 
 async function insertRandomUsers() {
   try {
-    const urls = [1, 2, 3, 4, 5].map(() => axios.get('https://randomuser.me/api/'));
-    const results = await Promise.all(urls);
+    const calls = Array(5).fill(0).map(() => axios.get('https://randomuser.me/api/'));
+    const results = await Promise.all(calls);
 
-    const users = results.map(r => r.data.results[0]);
-
-    users.forEach(u => {
-      const username = sanitize(u.login.username);
-      const password = sanitize(u.login.password);
-      const email = sanitize(u.email);
-
-      const query = `
-        INSERT INTO users (username, email, password, is_admin)
-        VALUES ('${username}', '${email}', '${password}', 0)
-      `;
-
-      db.run(query, (err) => {
-        if (err) console.error("User insert error:", err.message);
+    for (const r of results) {
+      const u = r.data.results[0];
+      await User.create({
+        username: sanitize(u.login.username),
+        email: sanitize(u.email),
+        password: sanitize(u.login.password),
+        is_admin: 0
       });
-    });
+    }
 
     console.log("Inserted 5 random users.");
   } catch (err) {
-    console.error("Error inserting users:", err.message);
+    console.error("User insert error:", err);
   }
 }
 
+
 async function insertProductsFromAPI() {
   try {
-    const response = await axios.get('https://fakestoreapi.com/products');
-    const products = response.data;
+    const response = await axios.get("https://fakestoreapi.com/products");
 
-    products.forEach(p => {
-      const title = sanitize(p.title);
-      const description = sanitize(p.description);
-      const category = sanitize(p.category);
-      const image = sanitize(p.image);
-
-      const query = `
-        INSERT INTO products (title, description, price, image, category, rating_rate, rating_count)
-        VALUES ('${title}', '${description}', ${p.price}, '${image}', '${category}', ${p.rating.rate}, ${p.rating.count})
-      `;
-
-      db.run(query, (err) => {
-        if (err) console.error("Product insert error:", err.message);
+    for (const p of response.data) {
+      await Product.create({
+        title: sanitize(p.title),
+        description: sanitize(p.description),
+        price: p.price,
+        image: sanitize(p.image),
+        category: sanitize(p.category),
+        rating_rate: p.rating.rate,
+        rating_count: p.rating.count
       });
-    });
+    }
 
-    console.log("Products inserted:", products.length);
+    console.log("Inserted products.");
   } catch (err) {
-    console.error("Error fetching products:", err.message);
+    console.error("Product insert error:", err.message);
   }
 }
 
 app.get('/generate-users', async (req, res) => {
   await insertRandomUsers();
-  res.json({ success: true, message: "Generated 5 random users" });
+  res.json({ message: "5 random users added" });
 });
 
 app.get('/generate-products', async (req, res) => {
   await insertProductsFromAPI();
-  res.json({ success: true, message: "Products generated" });
+  res.json({ message: "Products added" });
 });
 
-
-app.get('/products/search', (req, res) => {
-  const raw = req.query.q || "";
-  const search = sanitize(raw);
+app.get('/products/search', async (req, res) => {
+  const q = sanitize(req.query.q || "");
 
   const query = `
-    SELECT id, title, description, price, image, category, rating_rate, rating_count
-    FROM products
-    WHERE title LIKE '%${search}%'
-       OR description LIKE '%${search}%'
-       OR category LIKE '%${search}%'
+      SELECT * FROM Products
+      WHERE title LIKE '%${q}%' 
+      OR description LIKE '%${q}%'
+      OR category LIKE '%${q}%'
   `;
 
-  db.all(query, [], (err, rows) => {
-    if (err) {
-      console.error("SQL search error:", err.message);
-      return res.status(500).json({ error: err.message });
-    }
-    res.json(rows);
-  });
+  try {
+    const results = await sequelize.query(query, { type: Sequelize.QueryTypes.SELECT });
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 
-app.get('/products', (req, res) => {
-  db.all(`
-    SELECT id, title, description, price, image, category, rating_rate, rating_count
-    FROM products
-  `, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+app.get('/products', async (req, res) => {
+  try {
+    const products = await Product.findAll();
+    res.json(products);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 
-app.get('/products/:id', (req, res) => {
+app.get('/products/:id', async (req, res) => {
   let id = sanitize(req.params.id);
 
-  
-  if (isNaN(id)) {
-    return res.status(400).json({ error: "Invalid ID" });
-  }
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
 
   const query = `
-    SELECT id, title, description, price, image, category, rating_rate, rating_count
-    FROM products
-    WHERE id = ${id}
+    SELECT * FROM Products WHERE id = ${id}
   `;
 
-  db.get(query, [], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(row || {});
-  });
+  try {
+    const result = await sequelize.query(query, { type: Sequelize.QueryTypes.SELECT });
+    res.json(result[0] || {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
+
 
 
 app.get('/', (req, res) => {
-  res.send("Hello Ipssi v2!");
+  res.send("Hello ORM version!");
 });
 
+
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log("Server running on port " + port);
 });
